@@ -49,6 +49,10 @@
 #include <time.h>
 #include <tchar.h>
 
+#ifndef MS_ENH_RSA_AES_PROV_XP
+#define MS_ENH_RSA_AES_PROV_XP  L"Microsoft Enhanced RSA and AES Cryptographic Provider (Prototype)"
+#endif
+
 #define STRONG_ITERATIONS	500000
 
 #define READ_BUFFER_SIZE	65536
@@ -593,7 +597,7 @@ int _tmain(int argc, TCHAR* argv[])
 	else
 		printf("Generating the encryption key...");
 
-   if (!PBKDF2(sha256Prf, (LPBYTE) szPassword, strlen(szPassword), pbSalt, 16, STRONG_ITERATIONS, pbDerivedKey, 32))
+   if (!PBKDF2(sha256Prf, (LPBYTE) szPassword, (DWORD) strlen(szPassword), pbSalt, 16, STRONG_ITERATIONS, pbDerivedKey, 32))
    {
 		if (bForDecrypt)
 			printf("Error!\nAn unexpected error occured while creating the decryption key (Code 0x%.8X)\n", GetLastError());
@@ -628,7 +632,7 @@ int _tmain(int argc, TCHAR* argv[])
 					{
 						while ((readLen = fread(pbData, 1, READ_BUFFER_SIZE, fin)) == READ_BUFFER_SIZE)
 						{
-							cbData = readLen;
+							cbData = (DWORD) readLen;
 							if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
 							{
 								fwrite(pbData,1,cbData,fout);
@@ -642,7 +646,7 @@ int _tmain(int argc, TCHAR* argv[])
 
 						if (iStatus == 0)
 						{
-							cbData = readLen;
+							cbData = (DWORD) readLen;
 							if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), TRUE))
 							{
 								fwrite(pbData,1,cbData,fout);
@@ -687,7 +691,7 @@ int _tmain(int argc, TCHAR* argv[])
 					fwrite(pbData,1,cbData,fout);
 					while ((readLen = fread(pbData, 1, READ_BUFFER_SIZE, fin)) == READ_BUFFER_SIZE)
 					{
-						cbData = readLen;
+						cbData = (DWORD) readLen;
 						if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
 						{
 							fwrite(pbData,1,cbData,fout);
@@ -701,7 +705,7 @@ int _tmain(int argc, TCHAR* argv[])
 
 					if (iStatus == 0)
 					{
-						cbData = readLen;
+						cbData = (DWORD) readLen;
 						if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), TRUE))
 						{
 							fwrite(pbData,1,cbData,fout);
