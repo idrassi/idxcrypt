@@ -1,11 +1,11 @@
 /*
  * A small utility to encrypt/decrypt files using AES256 and strong password key derivation.
  *
- * The AES256 key is derived from password using PBKDF2-SHA256 with 500000 iterations.
+ * The AES256 key is derived from password using PBKDF2 with 500000 iterations.
  * 
  * All cryptographic operations are done using Windows Crypto API.
  *
- * Copyright (c) 2014 Mounir IDRASSI <mounir.idrassi@idrix.fr>. All rights reserved.
+ * Copyright (c) 2014-2016 Mounir IDRASSI <mounir.idrassi@idrix.fr>. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,80 +60,87 @@
 // Pseudo Random Function (PRF) prototype
 
 /* generic context used in HMAC calculation */
+
+#define PRF_CTX_MAGIC 0x50524643
+
 typedef struct
 {
-   DWORD	magic;			/* used to help check that we are using the correct context */
-   void*	pParam;	      /* hold a custom pointer known to the implementation  */
+	DWORD	magic;			/* used to help check that we are using the correct context */
+	DWORD digestSize;		/* digest size in bytes of the underlying hash algorithm */
+	void*	pParam;	      /* hold a custom pointer known to the implementation  */
 } PRF_CTX;
 
 typedef BOOL (WINAPI* PRF_HmacInitPtr)(
-                           PRF_CTX*       pContext,   /* PRF context used in HMAC computation */
-                           unsigned char* pbKey,      /* pointer to authentication key */
-                           DWORD          cbKey       /* length of authentication key */                        
-                           );
+	PRF_CTX*       pContext,   /* PRF context used in HMAC computation */
+	unsigned char* pbKey,      /* pointer to authentication key */
+	DWORD          cbKey       /* length of authentication key */                        
+	);
 
 typedef BOOL (WINAPI* PRF_HmacPtr)(
-                           PRF_CTX*       pContext,   /* PRF context initialized by HmacInit */
-                           unsigned char*  pbData,    /* pointer to data stream */
-                           DWORD          cbData,     /* length of data stream */                           
-                           unsigned char* pbDigest    /* caller digest to be filled in */                           
-                           );
+	PRF_CTX*       pContext,   /* PRF context initialized by HmacInit */
+	unsigned char*  pbData,    /* pointer to data stream */
+	DWORD          cbData,     /* length of data stream */                           
+	unsigned char* pbDigest    /* caller digest to be filled in */                           
+	);
 
 typedef BOOL (WINAPI* PRF_HmacFreePtr)(
-                           PRF_CTX*       pContext	/* PRF context initialized by HmacInit */                        
-                           );
+	PRF_CTX*       pContext	/* PRF context initialized by HmacInit */                        
+	);
 
 
 /* PRF type definition */
 typedef struct
 {
-   PRF_HmacInitPtr   hmacInit;
-   PRF_HmacPtr       hmac;
-   PRF_HmacFreePtr	hmacFree;
-   DWORD             cbHmacLength;
+	PRF_HmacInitPtr   hmacInit;
+	PRF_HmacPtr       hmac;
+	PRF_HmacFreePtr	hmacFree;
 } PRF;
 
 
-/* Implementation of HMAC-SHA256 using CAPI */
-
-#define HMAC_SHA256_MAGIC 0x53484132
+/* Implementation of HMAC using CAPI */
 
 typedef struct
 {
-   HCRYPTPROV hProv;
-   HCRYPTKEY hKey;
+	HCRYPTPROV hProv;
+	HCRYPTHASH hInnerHash;
+	HCRYPTHASH hOuterHash;
 } CAPI_CTX_PARAM;
 
 // Structure used by CAPI for HMAC computation
 typedef struct {
-   BLOBHEADER hdr;
-   DWORD cbKeySize;
+	BLOBHEADER hdr;
+	DWORD cbKeySize;
 } HMAC_KEY_BLOB;
 
-BOOL WINAPI hmacInit_sha256(
-   PRF_CTX*       pContext,   /* PRF context used in HMAC computation */
-   unsigned char* pbKey,      /* pointer to authentication key */
-   DWORD          cbKey       /* length of authentication key */                        
-)
+BOOL WINAPI hmacGenericInit(
+	PRF_CTX*       pContext,   /* PRF context used in HMAC computation */
+	ALG_ID			hashAlgid,	/* hash algorithm used in HMAC */
+	unsigned char* pbKey,      /* pointer to authentication key */
+	DWORD          cbKey       /* length of authentication key */                        
+	)
 {
-   HCRYPTPROV hProv = NULL;
-   HCRYPTKEY hKey = NULL;
-   HMAC_KEY_BLOB *pKeyBlob = (HMAC_KEY_BLOB *) LocalAlloc(0, sizeof(HMAC_KEY_BLOB) + cbKey + 32); // we put enough room for 0's padding
-   BOOL bStatus = FALSE;
-   DWORD dwError = 0, dwLen;
+	HCRYPTPROV hProv = NULL;
+	HCRYPTHASH hHash = NULL, hInnerHash = NULL, hOuterHash = NULL;
+	DWORD cbDigestSize, cbBlockSize;
+	BOOL bStatus = FALSE;
+	DWORD dwError = 0, i;
+	BYTE key[64];
+	BYTE buffer[128];
 
-   pKeyBlob->hdr.bType = PLAINTEXTKEYBLOB;
-   pKeyBlob->hdr.bVersion = CUR_BLOB_VERSION;
-   pKeyBlob->hdr.reserved = 0;
-   pKeyBlob->hdr.aiKeyAlg = CALG_RC2;
-   pKeyBlob->cbKeySize = cbKey;
-   memcpy(((LPBYTE) pKeyBlob) + sizeof(HMAC_KEY_BLOB), pbKey, cbKey);
+	switch (hashAlgid)
+	{
+		case CALG_SHA1: cbDigestSize = 20; cbBlockSize = 64; break;
+		case CALG_SHA_256: cbDigestSize = 32;  cbBlockSize = 64; break;
+		case CALG_SHA_384: cbDigestSize = 48;  cbBlockSize = 128; break;
+		case CALG_SHA_512: cbDigestSize = 64;  cbBlockSize = 128; break;
+		default: return FALSE;
+	}
 
-   if (!pContext)
-   {
-      dwError = ERROR_BAD_ARGUMENTS;
-      goto hmacInit_end;
-   }
+	if (!pContext)
+	{
+		dwError = ERROR_BAD_ARGUMENTS;
+		goto hmacInit_end;
+	}
 
    if (!CryptAcquireContext(&hProv, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) 
    {
@@ -144,241 +151,332 @@ BOOL WINAPI hmacInit_sha256(
 		}
    }
 
-   dwLen = sizeof(HMAC_KEY_BLOB) + cbKey;
-   if (dwLen < 32)
-   {
-      // we pad with zeros till the size of SHA512 digest.
-      // this is to avoid erros under Windows 8.1 wich doesn't accept 1-byte RC2 keys
-	  // the result will be the same since the HMAC-SHA512 will perform the same padding
-	  DWORD dwPad = 32 - dwLen;
-	  memset(((LPBYTE) pKeyBlob) + dwLen, 0, dwPad);
-	  dwLen += dwPad;
-	  pKeyBlob->cbKeySize += dwPad;
-   }
+	if (	!CryptCreateHash (hProv, hashAlgid, NULL, 0, &hHash) 
+		|| !CryptCreateHash (hProv, hashAlgid, NULL, 0, &hInnerHash)
+		|| !CryptCreateHash (hProv, hashAlgid, NULL, 0, &hOuterHash)
+		)
+	{
+		dwError = GetLastError();
+		goto hmacInit_end;
+	}
 
-   if (!CryptImportKey(hProv, (LPBYTE) pKeyBlob, dwLen, NULL, CRYPT_IPSEC_HMAC_KEY, &hKey))
-   {
-      dwError = GetLastError();
-      goto hmacInit_end;
-   }
+	if (cbKey > cbBlockSize)
+	{
+		/* If key is larger than hash algorithm block size,
+	    * set key = hash(key) as per HMAC specifications.
+		 */
+		if (!CryptHashData (hHash, pbKey, cbKey, 0))
+		{
+			dwError = GetLastError();
+			goto hmacInit_end;
+		}
 
-   CAPI_CTX_PARAM* pParam = (CAPI_CTX_PARAM*) LocalAlloc(0, sizeof(CAPI_CTX_PARAM));
-   pParam->hProv = hProv;
-   pParam->hKey = hKey;
+		cbKey = sizeof (key);
+		if (!CryptGetHashParam (hHash, HP_HASHVAL, key, &cbKey, 0))
+		{
+			dwError = GetLastError();
+			goto hmacInit_end;
+		}
 
-   pContext->magic = HMAC_SHA256_MAGIC;
-   pContext->pParam = (void*) pParam;
+		pbKey = key;
+	}
 
-   hProv = NULL;
-   hKey = NULL;
+	/* Precompute HMAC Inner Digest */
 
-   bStatus = TRUE;
+	for (i = 0; i < cbKey; ++i)
+		buffer[i] = (char) (pbKey[i] ^ 0x36);
+	memset (&buffer[cbKey], 0x36, cbBlockSize - cbKey);
+
+	if (!CryptHashData (hInnerHash, buffer, cbBlockSize, 0))
+	{
+		dwError = GetLastError();
+		goto hmacInit_end;
+	}
+
+	/* Precompute HMAC Outer Digest */
+
+	for (i = 0; i < cbKey; ++i)
+		buffer[i] = (char) (pbKey[i] ^ 0x5C);
+	memset (&buffer[cbKey], 0x5C, cbBlockSize - cbKey);
+
+	if (!CryptHashData (hOuterHash, buffer, cbBlockSize, 0))
+	{
+		dwError = GetLastError();
+		goto hmacInit_end;
+	}
+
+	CAPI_CTX_PARAM* pParam = (CAPI_CTX_PARAM*) LocalAlloc(0, sizeof(CAPI_CTX_PARAM));
+	pParam->hProv = hProv;
+	pParam->hInnerHash = hInnerHash;
+	pParam->hOuterHash = hOuterHash;
+
+	pContext->magic = PRF_CTX_MAGIC;
+	pContext->digestSize = cbDigestSize;
+	pContext->pParam = (void*) pParam;
+
+	hProv = NULL;
+	hInnerHash = NULL;
+	hOuterHash = NULL;
+
+	bStatus = TRUE;
 
 hmacInit_end:
 
-   if (hKey) CryptDestroyKey(hKey);
-   if (hProv) CryptReleaseContext(hProv, 0);
+	if (hHash) CryptDestroyHash(hHash);
+	if (hInnerHash) CryptDestroyHash(hInnerHash);
+	if (hOuterHash) CryptDestroyHash(hOuterHash);
+	if (hProv) CryptReleaseContext(hProv, 0);
 
-   if (pKeyBlob) LocalFree(pKeyBlob);
-
-   SetLastError(dwError);
-   return bStatus;
+	SetLastError(dwError);
+	return bStatus;
 }
 
-BOOL WINAPI hmac_sha256(
-   PRF_CTX*       pContext,               /* PRF context used in HMAC computation */  
-   unsigned char*  pbData,                /* pointer to data stream */
-   DWORD           cbData,                /* length of data stream */
-   unsigned char   pbDigest[32]           /* caller digest to be filled in */
+BOOL WINAPI hmacGeneric(
+	PRF_CTX*       pContext,               /* PRF context used in HMAC computation */  
+	unsigned char*  pbData,                /* pointer to data stream */
+	DWORD           cbData,                /* length of data stream */
+	unsigned char*  pbDigest					/* caller digest to be filled in */
 )
 {
-   HCRYPTPROV hProv = NULL;
-   HCRYPTHASH hHash = NULL;
-   HCRYPTKEY hKey = NULL;
-   DWORD cbDigest = 32;
-   HMAC_INFO   HmacInfo;
-   BOOL bStatus = FALSE;
-   DWORD dwError = 0;
+	HCRYPTPROV hProv = NULL;
+	HCRYPTHASH hHash = NULL;
+	HCRYPTHASH hInnerHash = NULL;
+	HCRYPTHASH hOuterHash = NULL;
+	DWORD cbDigest = 0;
+	BOOL bStatus = FALSE;
+	DWORD dwError = 0;
 
-   ZeroMemory(&HmacInfo, sizeof(HmacInfo));
-	HmacInfo.HashAlgid = CALG_SHA_256;
+	if (!pContext || (pContext->magic != PRF_CTX_MAGIC) || (!pContext->pParam))
+	{
+		dwError = ERROR_BAD_ARGUMENTS;
+		goto hmac_end;
+	}
 
-   if (!pContext || (pContext->magic != HMAC_SHA256_MAGIC) || (!pContext->pParam))
-   {
-      dwError = ERROR_BAD_ARGUMENTS;
-      goto hmac_end;
-   }
+	hProv = ((CAPI_CTX_PARAM*) pContext->pParam)->hProv;
+	hInnerHash = ((CAPI_CTX_PARAM*) pContext->pParam)->hInnerHash;
+	hOuterHash = ((CAPI_CTX_PARAM*) pContext->pParam)->hOuterHash;	
 
-   hProv = ((CAPI_CTX_PARAM*) pContext->pParam)->hProv;
-   hKey = ((CAPI_CTX_PARAM*) pContext->pParam)->hKey;
+	/* Restore Precomputed Inner Digest Context */
 
-   if (!CryptCreateHash(hProv, CALG_HMAC, hKey, 0, &hHash))
-   {
-      dwError = GetLastError();
-      goto hmac_end;
-   }
+	if (!CryptDuplicateHash( hInnerHash, NULL, 0, &hHash))
+	{
+		dwError = GetLastError();
+		goto hmac_end;
+	}
 
-   if (!CryptSetHashParam( hHash, HP_HMAC_INFO, (BYTE*)&HmacInfo, 0))
-   {
-      dwError = GetLastError();
-      goto hmac_end;
-   }
+	if (!CryptHashData(hHash, pbData, cbData, 0))
+	{
+		dwError = GetLastError();
+		goto hmac_end;
+	}
 
-   if (!CryptHashData(hHash, pbData, cbData, 0))
-   {
-      dwError = GetLastError();
-      goto hmac_end;
-   }
+	cbDigest = pContext->digestSize;
+	if (!CryptGetHashParam(hHash, HP_HASHVAL, pbDigest, &cbDigest, 0))
+	{
+		dwError = GetLastError();
+		goto hmac_end;
+	}
 
-   if (!CryptGetHashParam(hHash, HP_HASHVAL, pbDigest, &cbDigest, 0))
-   {
-      dwError = GetLastError();
-      goto hmac_end;
-   }
+	CryptDestroyHash(hHash);
+	hHash = NULL;
 
-   bStatus = TRUE;
+	/* Restore Precomputed Outer Digest Context */
+
+	if (!CryptDuplicateHash( hOuterHash, NULL, 0, &hHash))
+	{
+		dwError = GetLastError();
+		goto hmac_end;
+	}
+
+	if (!CryptHashData(hHash, pbDigest, cbDigest, 0))
+	{
+		dwError = GetLastError();
+		goto hmac_end;
+	}
+
+	cbDigest = pContext->digestSize;
+	if (!CryptGetHashParam(hHash, HP_HASHVAL, pbDigest, &cbDigest, 0))
+	{
+		dwError = GetLastError();
+		goto hmac_end;
+	}
+
+	bStatus = TRUE;
 
 hmac_end:
 
-   if (hHash) CryptDestroyHash(hHash);
+	if (hHash) CryptDestroyHash(hHash);
 
-   SetLastError(dwError);
-   return bStatus;
+	SetLastError(dwError);
+	return bStatus;
 }
 
 
-BOOL WINAPI hmacFree_sha256(
-   PRF_CTX*       pContext          /* PRF context used in HMAC computation */  
-)
+BOOL WINAPI hmacGenericFree(
+	PRF_CTX*       pContext          /* PRF context used in HMAC computation */  
+	)
 {
-   HCRYPTPROV hProv = NULL;
-   HCRYPTKEY hKey = NULL;
+	HCRYPTPROV hProv = NULL;
+	HCRYPTHASH hInnerHash = NULL;
+	HCRYPTHASH hOuterHash = NULL;
 
-   if (!pContext || (pContext->magic != HMAC_SHA256_MAGIC) || (!pContext->pParam))
-   {
-      SetLastError(ERROR_BAD_ARGUMENTS);
-      return FALSE;
-   }
+	if (!pContext || (pContext->magic != PRF_CTX_MAGIC) || (!pContext->pParam))
+	{
+		SetLastError(ERROR_BAD_ARGUMENTS);
+		return FALSE;
+	}
 
-   hProv = ((CAPI_CTX_PARAM*) pContext->pParam)->hProv;
-   hKey = ((CAPI_CTX_PARAM*) pContext->pParam)->hKey;
+	hProv = ((CAPI_CTX_PARAM*) pContext->pParam)->hProv;
+	hInnerHash = ((CAPI_CTX_PARAM*) pContext->pParam)->hInnerHash;
+	hOuterHash = ((CAPI_CTX_PARAM*) pContext->pParam)->hOuterHash;
 
-   CryptDestroyKey(hKey);
-   CryptReleaseContext(hProv, 0);
+	CryptDestroyKey(hInnerHash);
+	CryptDestroyKey(hOuterHash);
+	CryptReleaseContext(hProv, 0);
 
-   LocalFree(pContext->pParam);
-   SecureZeroMemory(pContext, sizeof(PRF_CTX));
+	LocalFree(pContext->pParam);
+	SecureZeroMemory(pContext, sizeof(PRF_CTX));
 
-   return TRUE;
+	return TRUE;
 }
 
 /*
- * Definition of the HMAC-SHA256 PRF
+ * Definition of the HMAC PRF objects
  */
-PRF sha256Prf = {hmacInit_sha256, hmac_sha256, hmacFree_sha256, 32};
+
+static BOOL WINAPI hmacInit_sha1( PRF_CTX* pContext, unsigned char* pbKey, DWORD cbKey)
+{
+	return hmacGenericInit (pContext, CALG_SHA1, pbKey, cbKey);
+}
+
+static BOOL WINAPI hmacInit_sha256( PRF_CTX* pContext, unsigned char* pbKey, DWORD cbKey)
+{
+	return hmacGenericInit (pContext, CALG_SHA_256, pbKey, cbKey);
+}
+
+static BOOL WINAPI hmacInit_sha384( PRF_CTX* pContext, unsigned char* pbKey, DWORD cbKey)
+{
+	return hmacGenericInit (pContext, CALG_SHA_384, pbKey, cbKey);
+}
+
+static BOOL WINAPI hmacInit_sha512( PRF_CTX* pContext, unsigned char* pbKey, DWORD cbKey)
+{
+	return hmacGenericInit (pContext, CALG_SHA_512, pbKey, cbKey);
+}
+
+PRF sha1Prf		= {hmacInit_sha1,		hmacGeneric, hmacGenericFree};
+PRF sha256Prf	= {hmacInit_sha256,	hmacGeneric, hmacGenericFree};
+PRF sha384Prf	= {hmacInit_sha384,	hmacGeneric, hmacGenericFree};
+PRF sha512Prf	= {hmacInit_sha512,	hmacGeneric, hmacGenericFree};
 
 
 static inline void xor(LPBYTE ptr1, LPBYTE ptr2, DWORD dwLen)
 {
-   if (dwLen)
-      while (dwLen--) *ptr1++ ^= *ptr2++;
+	if (dwLen)
+		while (dwLen--) *ptr1++ ^= *ptr2++;
 }
 
 /*
  * PBKDF2 implementation
  */
 BOOL PBKDF2(PRF pPrf,
-            unsigned char* pbPassword,
-            DWORD cbPassword,
-            unsigned char* pbSalt,
-            DWORD cbSalt,
-            DWORD dwIterationCount,
-            unsigned char* pbDerivedKey,
-            DWORD          cbDerivedKey)
+	unsigned char* pbPassword,
+	DWORD cbPassword,
+	unsigned char* pbSalt,
+	DWORD cbSalt,
+	DWORD dwIterationCount,
+	unsigned char* pbDerivedKey,
+	DWORD          cbDerivedKey)
 {
-   BOOL bStatus = FALSE;
-   DWORD dwError = 0;
-   DWORD l, r, i,j;
-   DWORD hlen = pPrf.cbHmacLength;
-   LPBYTE Ti = (LPBYTE) LocalAlloc(0, hlen);
-   LPBYTE V = (LPBYTE) LocalAlloc(0, hlen);
-   LPBYTE U = (LPBYTE) LocalAlloc(0, max((cbSalt + 4), hlen));
-   DWORD dwULen;
-   PRF_CTX prfCtx = {0};
+	BOOL bStatus = FALSE;
+	DWORD dwError = 0;
+	DWORD l, r, i,j;
+	DWORD hlen;
+	LPBYTE Ti = NULL;
+	LPBYTE V = NULL;
+	LPBYTE U = NULL;
+	DWORD dwULen;
+	PRF_CTX prfCtx = {0};
 
-   if (!pbDerivedKey || !cbDerivedKey || (!pbPassword && cbPassword) )
-   {
-      dwError = ERROR_BAD_ARGUMENTS;
-      goto PBKDF2_end;
-   }
+	if (!pbDerivedKey || !cbDerivedKey || (!pbPassword && cbPassword) )
+	{
+		dwError = ERROR_BAD_ARGUMENTS;
+		goto PBKDF2_end;
+	}
 
-   if (!Ti || !U || !V)
-   {
-      dwError = ERROR_NOT_ENOUGH_MEMORY;
-      goto PBKDF2_end;
-   }
+	if (!pPrf.hmacInit(&prfCtx, pbPassword, cbPassword))
+	{
+		dwError = GetLastError();
+		goto PBKDF2_end;
+	}
 
-   l = (DWORD) ceil((double) cbDerivedKey / (double) hlen);
-   r = cbDerivedKey - (l - 1) * hlen;
+	hlen = prfCtx.digestSize;
 
-   if (!pPrf.hmacInit(&prfCtx, pbPassword, cbPassword))
-   {
-      dwError = GetLastError();
-      goto PBKDF2_end;
-   }
+	Ti = (LPBYTE) LocalAlloc(0, hlen);
+	V = (LPBYTE) LocalAlloc(0, hlen);
+	U = (LPBYTE) LocalAlloc(0, max((cbSalt + 4), hlen));
 
-   for (i = 1; i <= l; i++)
-   {
-      ZeroMemory(Ti, hlen);
-      for (j = 0; j < dwIterationCount; j++)
-      {
-         if (j == 0)
-         {
-            // construct first input for PRF
-            memcpy(U, pbSalt, cbSalt);
-            U[cbSalt] = (BYTE) ((i & 0xFF000000) >> 24);
-            U[cbSalt + 1] = (BYTE) ((i & 0x00FF0000) >> 16);
-            U[cbSalt + 2] = (BYTE) ((i & 0x0000FF00) >> 8);
-            U[cbSalt + 3] = (BYTE) ((i & 0x000000FF));
-            dwULen = cbSalt + 4;
-         }
-         else
-         {
-            memcpy(U, V, hlen);
-            dwULen = hlen;
-         }
+	if (!Ti || !U || !V)
+	{
+		dwError = ERROR_NOT_ENOUGH_MEMORY;
+		goto PBKDF2_end;
+	}
 
-         if (!pPrf.hmac(&prfCtx, U, dwULen, V))
-         {
-            dwError = GetLastError();
-            goto PBKDF2_end;
-         }
+	l = (DWORD) ceil((double) cbDerivedKey / (double) hlen);
+	r = cbDerivedKey - (l - 1) * hlen;
 
-         xor(Ti, V, hlen);
-      }
+	for (i = 1; i <= l; i++)
+	{
+		ZeroMemory(Ti, hlen);
+		for (j = 0; j < dwIterationCount; j++)
+		{
+			if (j == 0)
+			{
+				// construct first input for PRF
+				memcpy(U, pbSalt, cbSalt);
+				U[cbSalt] = (BYTE) ((i & 0xFF000000) >> 24);
+				U[cbSalt + 1] = (BYTE) ((i & 0x00FF0000) >> 16);
+				U[cbSalt + 2] = (BYTE) ((i & 0x0000FF00) >> 8);
+				U[cbSalt + 3] = (BYTE) ((i & 0x000000FF));
+				dwULen = cbSalt + 4;
+			}
+			else
+			{
+				memcpy(U, V, hlen);
+				dwULen = hlen;
+			}
 
-      if (i != l)
-      {
-         memcpy(&pbDerivedKey[(i-1) * hlen], Ti, hlen);
-      }
-      else
-      {
-         // Take only the first r bytes
-         memcpy(&pbDerivedKey[(i-1) * hlen], Ti, r);
-      }
-   }
+			if (!pPrf.hmac(&prfCtx, U, dwULen, V))
+			{
+				dwError = GetLastError();
+				goto PBKDF2_end;
+			}
 
-   bStatus = TRUE;
+			xor(Ti, V, hlen);
+		}
+
+		if (i != l)
+		{
+			memcpy(&pbDerivedKey[(i-1) * hlen], Ti, hlen);
+		}
+		else
+		{
+			// Take only the first r bytes
+			memcpy(&pbDerivedKey[(i-1) * hlen], Ti, r);
+		}
+	}
+
+	bStatus = TRUE;
 
 PBKDF2_end:
 
-   pPrf.hmacFree(&prfCtx);
+	pPrf.hmacFree(&prfCtx);
 
-   if (Ti) LocalFree(Ti);
-   if (U) LocalFree(U);
-   if (V) LocalFree(V);
-   SetLastError(dwError);
-   return bStatus;
+	if (Ti) LocalFree(Ti);
+	if (U) LocalFree(U);
+	if (V) LocalFree(V);
+	SetLastError(dwError);
+	return bStatus;
 }
 
 
@@ -487,34 +585,115 @@ BOOL AesProcess(AES_CTX* pCtx, LPBYTE pbData, LPDWORD pcbData, DWORD cbBuffer, B
 	return bRet;
 }
 
+/* Function to display information about the progress of the current operation */
+clock_t startClock = 0;
+clock_t currentClock = 0;
+
+void ShowProgress (LPCTSTR szOperationDesc, __int64 inputLength, __int64 totalProcessed, BOOL bFinalBlock)
+{
+	/* display progress information every 2 seconds */
+	clock_t t = clock();
+	if ((currentClock == 0) || bFinalBlock || ((t - currentClock) >= (2 * CLOCKS_PER_SEC)))
+	{
+		currentClock = t;
+		if (currentClock == startClock) currentClock = startClock + 1;
+		double processingTime = (double) (currentClock - startClock) / (double) CLOCKS_PER_SEC;
+		if (bFinalBlock)
+			_tprintf(_T("\r%sDone! (time: %.2fs - speed: %.2f MiB/s)\n"), szOperationDesc, processingTime, (double) totalProcessed / (processingTime * 1024.0 * 1024.0));
+		else
+			_tprintf(_T("\r%s (%.2f%% - %.2f MiB/s)"), szOperationDesc, ((double) totalProcessed * 100.0)/ (double) inputLength, (double) totalProcessed / (processingTime * 1024.0 * 1024.0));
+	}
+}
+
+void ShowUsage()
+{
+   _tprintf(_T("Usage : idxcrypt InputFile Password OutputFile [/d] [/hash algo]\n"));
+	_tprintf(_T("\tParameters:\n"));
+	_tprintf(_T("\t  /d: Perform decryption instead of encryption\n"));
+	_tprintf(_T("\t  /hash algo: Specified hash algorithm to use for key derivation.\n"));
+	_tprintf(_T("\t              Possible value are sha256, sha384 and sha512.\n"));
+	_tprintf(_T("\t              sha256 is the default\n"));
+	_tprintf(_T("\n"));
+}
+
 int _tmain(int argc, TCHAR* argv[])
 {  
 	int iStatus = 0;
 	BYTE pbDerivedKey[256];
-	BYTE pbSalt[16], pbIV[16];
+	BYTE pbSalt[64], pbIV[16];
 	FILE* fin = NULL;
 	FILE* fout = NULL;
-	int iLen;
+	int i, iLen;
 	char szPassword[129]; // maximum 128 UTF8 bytes
 	BYTE pbData[READ_BUFFER_SIZE + 32];
 	DWORD cbData;
-	__int64 inputLength;
-	size_t readLen;
-	BOOL bForDecrypt;
+	__int64 inputLength, totalProcessed = 0;
+	size_t readLen = 0;
+	BOOL bForDecrypt = FALSE;
+	PRF* pPrf = &sha256Prf; // PBKDF2-SHA256 is used by default
+	size_t cbSalt = 16; // 16 bytes salt for SHA-256 and 64-bytes otherwise
 	
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stdin, NULL, _IONBF, 0);
 
-	_tprintf(_T("\nidxcrypt - Simple file encryptor. By IDRASSI Mounir (mounir@idrix.fr)\n\nCopyright 2014 IDRIX\n\n\n"));
+	_tprintf(_T("\nidxcrypt - Simple yet Strong file encryptor. By IDRASSI Mounir (mounir@idrix.fr)\n\nCopyright 2016 IDRIX\n\n\n"));
 
-	if ((argc != 4 && argc != 5) || (argc == 5 && _tcsicmp(argv[4], _T("/d"))))
+	if (argc < 4 || argc > 7)
 	{
-		_tprintf(_T("Wrong parameters list.\nUsage : idxcrypt InputFile Password OutputFile [/d]\n"));
+		ShowUsage ();
 		iStatus = -1;
 		goto main_end;
 	}
 
-	bForDecrypt = (argc == 5)? TRUE : FALSE;
+	if (argc >= 5)
+	{
+      for (i = 4; i < argc; i++)
+      {
+         if (_tcsicmp(argv[i],_T("/hash")) == 0)
+         {
+            if ((i + 1) >= argc)
+            {
+               // missing file argument               
+					ShowUsage ();
+					iStatus = -1;
+					goto main_end;
+            }
+
+            if (_tcsicmp(argv[i+1], _T("sha256")) == 0)
+					pPrf = &sha256Prf;
+				else if (_tcsicmp(argv[i+1], _T("sha384")) == 0)
+				{
+					pPrf = &sha384Prf;
+					cbSalt = 64;
+				}
+				else if (_tcsicmp(argv[i+1], _T("sha512")) == 0)
+				{
+					pPrf = &sha512Prf;
+					cbSalt = 64;
+				}
+				else
+				{
+               // missing file argument               
+					ShowUsage ();
+					iStatus = -1;
+					goto main_end;
+				}
+            i++;
+         }
+         else if (_tcsicmp(argv[i],_T("/d")) == 0)
+         {
+            bForDecrypt = TRUE;
+         }
+         else
+         {
+				ShowUsage ();
+				iStatus = -1;
+				goto main_end;
+         }
+      }
+	}
+
+
 
 	fin = _tfopen(argv[1], _T("rb"));
 	if (!fin)
@@ -527,12 +706,12 @@ int _tmain(int argc, TCHAR* argv[])
 
 	if ((inputLength = _filelengthi64(_fileno(fin))) == 0)
 	{
-		_tprintf(_T("The input file is empty. No encryption will be performed.\n"));
+		_tprintf(_T("The input file is empty. No action will be performed.\n"));
 		iStatus = -1;
 		goto main_end;
 	}
 
-	if (bForDecrypt && (inputLength < 64 || (inputLength % 16)))
+	if (bForDecrypt && ((inputLength < (__int64) (48 + cbSalt)) || (inputLength % 16)))
 	{
 		_tprintf(_T("Error : input file is not a valid encrypted file.\n"));
 		iStatus = -1;
@@ -573,17 +752,20 @@ int _tmain(int argc, TCHAR* argv[])
 
 	if (bForDecrypt)
 	{
-		if ((16 != fread(pbSalt, 1, 16, fin)) || (16 != fread(pbIV, 1, 16, fin)))
+		if ((cbSalt != fread(pbSalt, 1, cbSalt, fin)) || (16 != fread(pbIV, 1, 16, fin)))
 		{
 			_tprintf(_T("An unexpected error occured while reading the input file\n"));
 			iStatus = -1;
 			goto main_end;
 		}
+
+		/* remove size of salt and IV from the input length */
+		inputLength -= (__int64) (16 + cbSalt);
 	}
 	else
 	{
 		/* generate random salt */
-		if (!GenerateRandom(pbSalt, 16) || !GenerateRandom(pbIV, 16))
+		if (!GenerateRandom(pbSalt, (DWORD) cbSalt) || !GenerateRandom(pbIV, 16))
 		{
 			DWORD dwErr = GetLastError();
 			_tprintf(_T("An unexpected error occured while preparing for the encryption (Code 0x%.8X)\n"), dwErr);
@@ -593,89 +775,128 @@ int _tmain(int argc, TCHAR* argv[])
 	}
 
 	if (bForDecrypt)
-		printf("Generating the decryption key...");
+		_tprintf(_T("Generating the decryption key..."));
 	else
-		printf("Generating the encryption key...");
+		_tprintf(_T("Generating the encryption key..."));
 
-   if (!PBKDF2(sha256Prf, (LPBYTE) szPassword, (DWORD) strlen(szPassword), pbSalt, 16, STRONG_ITERATIONS, pbDerivedKey, 32))
+   if (!PBKDF2(sha256Prf, (LPBYTE) szPassword, (DWORD) strlen(szPassword), pbSalt, (DWORD) cbSalt, STRONG_ITERATIONS, pbDerivedKey, 32))
    {
 		if (bForDecrypt)
-			printf("Error!\nAn unexpected error occured while creating the decryption key (Code 0x%.8X)\n", GetLastError());
+			_tprintf(_T("Error!\nAn unexpected error occured while creating the decryption key (Code 0x%.8X)\n"), GetLastError());
 		else
-			printf("Error!\nAn unexpected error occured while creating the encryption key (Code 0x%.8X)\n", GetLastError());
+			_tprintf(_T("Error!\nAn unexpected error occured while creating the encryption key (Code 0x%.8X)\n"), GetLastError());
 		iStatus = -1;
       goto main_end;
    }
 	else
 	{
 		if (bForDecrypt)
-			printf("Done!\nInitializing decryption...");
+			_tprintf(_T("Done!\nInitializing decryption..."));
 		else
-			printf("Done!\nInitializing encryption...");
+			_tprintf(_T("Done!\nInitializing encryption..."));
 		AES_CTX ctx;
+		BOOL bStatus;
 		if (AesInit(pbDerivedKey, pbIV, bForDecrypt, &ctx))
 		{
+			TCHAR szOpDesc[64];
 			BYTE pbHeader[16];
 			memcpy(pbHeader, "IDXCRYPTTPYRCXDI", 16);
 
+			_tprintf(_T("Done!\n"));
+
 			if (bForDecrypt)
-				printf("Done!\nDecrypting the input file...");
+				_tcscpy(szOpDesc, _T("Decrypting the input file..."));
 			else
-				printf("Done!\nEncrypting the input file...");
+				_tcscpy(szOpDesc, _T("Encrypting the input file..."));
+
+			_tprintf(szOpDesc);
 
 			if (bForDecrypt)
 			{
 				cbData = (DWORD) fread(pbData, 1, 16, fin);
-				if ((cbData == 16) && AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
+				/* remove size of header from input length */
+				inputLength -= 16;
+
+				if (cbData == 16)
 				{
-					if ((cbData == 16) && (0 == memcmp(pbData, pbHeader, 16)))
+					if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
 					{
-						while ((readLen = fread(pbData, 1, READ_BUFFER_SIZE, fin)) == READ_BUFFER_SIZE)
+						if ((cbData == 16) && (0 == memcmp(pbData, pbHeader, 16)))
 						{
-							cbData = (DWORD) readLen;
-							if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
+							BOOL bFinal = FALSE;
+							startClock = clock();
+							while (!bFinal && ((readLen = fread(pbData, 1, READ_BUFFER_SIZE, fin)) == READ_BUFFER_SIZE))
 							{
-								fwrite(pbData,1,cbData,fout);
+								cbData = (DWORD) readLen;
+								totalProcessed += (__int64) READ_BUFFER_SIZE;
+								bFinal = (totalProcessed == inputLength)? TRUE : FALSE;
+								if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), bFinal))
+								{
+									if (cbData == fwrite(pbData,1,cbData,fout))
+									{
+										ShowProgress (szOpDesc, inputLength, totalProcessed, bFinal);
+									}
+									else
+									{
+										// Not all decrypted bytes writtent to disk. Aborting!
+										iStatus = -2;
+										break;
+									}
+								}
+								else
+								{
+									iStatus = -3;
+									break;
+								}
 							}
-							else
+
+							if ((iStatus == 0) && !bFinal)
 							{
-								iStatus = -1;
-								break;
+								if (ferror (fin))
+								{
+									iStatus = -1;
+								}
+								else
+								{
+									cbData = (DWORD) readLen;
+									totalProcessed += (__int64) readLen;
+									if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), TRUE))
+									{
+										if (cbData == fwrite(pbData,1,cbData,fout))
+										{
+											ShowProgress (szOpDesc, inputLength, totalProcessed, TRUE);
+										}
+										else
+										{
+											// Not all encrypted bytes writtent to disk. Aborting!									
+											iStatus = -2;
+										}
+									}
+									else
+										iStatus = -3;
+								}
 							}
 						}
-
-						if (iStatus == 0)
+						else
 						{
-							cbData = (DWORD) readLen;
-							if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), TRUE))
-							{
-								fwrite(pbData,1,cbData,fout);
-							}
-							else
-								iStatus = -1;
-						}
-
-						if (iStatus != 0)
-						{
-							printf("Failed!\nUnexpected error occured while decrypting the input file\n");
+						
+							iStatus = -4;
 						}
 					}
 					else
 					{
-						_tprintf(_T("Error : Password incorrect or the input file is not a valid encrypted file.\n"));
-						iStatus = -1;
+						iStatus = -3;
 					}
 				}
 				else
 				{
-					printf("Failed!\nUnexpected error occured while decrypting the input file\n");
 					iStatus = -1;
 				}
 			}
 			else
 			{
 				/* write the random salt */
-				fwrite(pbSalt,1,16,fout);
+				fwrite(pbSalt,1,cbSalt,fout);
 
 				/* write the random IV */
 				fwrite(pbIV,1,16,fout);
@@ -689,48 +910,95 @@ int _tmain(int argc, TCHAR* argv[])
 				if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
 				{
 					fwrite(pbData,1,cbData,fout);
+					startClock = clock();
 					while ((readLen = fread(pbData, 1, READ_BUFFER_SIZE, fin)) == READ_BUFFER_SIZE)
 					{
-						cbData = (DWORD) readLen;
-						if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE))
+						cbData = (DWORD) READ_BUFFER_SIZE;
+						bStatus = AesProcess(&ctx, pbData, &cbData, sizeof(pbData), FALSE);
+						if (bStatus)
 						{
-							fwrite(pbData,1,cbData,fout);
+							totalProcessed += (__int64) READ_BUFFER_SIZE;
+							if (cbData == fwrite(pbData,1,cbData,fout))
+							{
+								ShowProgress (szOpDesc, inputLength, totalProcessed, FALSE);
+							}
+							else
+							{
+								// Not all encrypted bytes writtent to disk. Aborting!
+								iStatus = -2;
+								break;
+							}
 						}
 						else
 						{
-							iStatus = -1;
+							iStatus = -3;
 							break;
 						}
 					}
 
 					if (iStatus == 0)
 					{
-						cbData = (DWORD) readLen;
-						if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), TRUE))
+						if (ferror (fin))
 						{
-							fwrite(pbData,1,cbData,fout);
+							iStatus = -1;
 						}
 						else
-							iStatus = -1;
+						{
+							cbData = (DWORD) readLen;
+							if (AesProcess(&ctx, pbData, &cbData, sizeof(pbData), TRUE))
+							{					
+								totalProcessed += (__int64) readLen;
+								if (cbData == fwrite(pbData,1,cbData,fout))
+								{
+									ShowProgress (szOpDesc, inputLength, totalProcessed, TRUE);
+								}
+								else
+								{
+									// Not all encrypted bytes writtent to disk. Aborting!
+									iStatus = -2;
+								}
+							}
+							else
+								iStatus = -3;
+						}
 					}
 				}
 				else
-					iStatus = -1;
+					iStatus = -3;
 			}
 
 			if (iStatus == 0)
 			{
-				_tprintf(_T("Done!\nInput file %s successfully as \"%s\"\n"), bForDecrypt? _T("decrypted") : _T("encrypted"), argv[3]);
+				_tprintf(_T("Flushing output file data to disk, please wait..."));
+				fclose(fout);
+				fout = NULL;
+				_tprintf(_T("\rInput file %s successfully as \"%s\"\n"), bForDecrypt? _T("decrypted") : _T("encrypted"), argv[3]);
 			}
-			else if (!bForDecrypt)
+			else if (iStatus == -1)
 			{
-				_tprintf(_T("Failed!\nUnexpected error occured while %s the input file\n"), bForDecrypt? _T("decrypting") : _T("encrypting"), argv[3]);
+				_tprintf(_T("\nUnexpected error occured while reading data from input file. Aborting!\n"));
+			}
+			else if (iStatus == -2)
+			{
+				_tprintf(_T("\nUnexpected error occured while writing data to output file. Aborting!\n"));
+			}
+			else if (iStatus == -3)
+			{
+				_tprintf(_T("\nUnexpected error occured while %s data.\n"), szOpDesc, bForDecrypt? _T("decrypting") : _T("encrypting"));
+			}
+			else if (iStatus == -4)
+			{
+				_tprintf(_T("Error!\nPassword incorrect or the input file is not a valid encrypted file.\n"));
+			}
+			else
+			{
+				_tprintf(_T("\nUnknown error occured while %s input file.\n"), szOpDesc, bForDecrypt? _T("decrypting") : _T("encrypting"));
 			}
 
 		}
 		else
 		{
-			printf("Error!\n");
+			_tprintf(_T("Error!\n"));
 			iStatus = -1;
 			goto main_end;
 		}
