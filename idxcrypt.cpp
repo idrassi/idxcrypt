@@ -779,7 +779,7 @@ int _tmain(int argc, TCHAR* argv[])
 	else
 		_tprintf(_T("Generating the encryption key..."));
 
-   if (!PBKDF2(sha256Prf, (LPBYTE) szPassword, (DWORD) strlen(szPassword), pbSalt, (DWORD) cbSalt, STRONG_ITERATIONS, pbDerivedKey, 32))
+   if (!PBKDF2(*pPrf, (LPBYTE) szPassword, (DWORD) strlen(szPassword), pbSalt, (DWORD) cbSalt, STRONG_ITERATIONS, pbDerivedKey, 32))
    {
 		if (bForDecrypt)
 			_tprintf(_T("Error!\nAn unexpected error occured while creating the decryption key (Code 0x%.8X)\n"), GetLastError());
