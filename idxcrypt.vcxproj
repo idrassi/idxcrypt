@@ -172,7 +172,6 @@
     <ResourceCompile Include="idxcrypt.rc" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="document-encrypt.ico" />
     <None Include="idxcrypt.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

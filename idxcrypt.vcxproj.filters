@@ -33,8 +33,5 @@
     <None Include="idxcrypt.ico">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="document-encrypt.ico">
-      <Filter>Resource Files</Filter>
-    </None>
   </ItemGroup>
 </Project>
