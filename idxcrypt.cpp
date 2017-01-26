@@ -51,8 +51,13 @@
 #include <string.h>
 #include <iostream>
 #include <string>
+#include <Shlwapi.h>
+
+#pragma comment(lib, "Shlwapi.lib")
 
 using namespace std;
+
+#define MAX 32767
 
 #ifndef MS_ENH_RSA_AES_PROV_XP
 #define MS_ENH_RSA_AES_PROV_XP  L"Microsoft Enhanced RSA and AES Cryptographic Provider (Prototype)"
@@ -613,17 +618,18 @@ void ShowProgress (LPCTSTR szOperationDesc, __int64 inputLength, __int64 totalPr
 void ShowUsage()
 {
 	_tprintf(_T("Usage to encrypt an entire folder : idxcrypt InputFolder Password OutputFolder [/d] [/hash algo]\n"));
-	_tprintf(_T("\tInputFolder example : C:\\inputFolder \n"));
-	_tprintf(_T("\tOutputFolder example : C:\\outputFolder \n\n"));
+	_tprintf(_T("\tInputFolder example : C:\\inputFolder (absolute path) or inputFolder (relative path) \n"));
+	_tprintf(_T("\tOutputFolder example : C:\\outputFolder (absolute path) or outputFolder (relative path) \n\n"));
 	_tprintf(_T("Usage to encrypt a file : idxcrypt InputFile Password OutputFile [/d] [/hash algo]\n"));
-	_tprintf(_T("\tInputFile example : C:\\inputFile \n"));
-	_tprintf(_T("\tOutputFile example : C:\\outputFile \n"));
+	_tprintf(_T("\tInputFile example : C:\\inputFile (absolute path) or inputFile (relative path) \n"));
+	_tprintf(_T("\tOutputFile example : C:\\outputFile (absolute path) or outputFile (relative path)\n"));
 	_tprintf(_T("\tParameters:\n"));
 	_tprintf(_T("\t  /d: Perform decryption instead of encryption\n"));
 	_tprintf(_T("\t  /hash algo: Specified hash algorithm to use for key derivation.\n"));
 	_tprintf(_T("\t              Possible value are sha256, sha384 and sha512.\n"));
 	_tprintf(_T("\t              sha256 is the default\n"));
 	_tprintf(_T("\n"));
+	_tprintf(_T("\nPlease use backslashes rather than slashes!\n"));
 }
 
 int opFile(FILE* fin, FILE* fout, const WCHAR foutPath[], char szPassword[], BOOL bForDecrypt, PRF* pPrf, size_t cbSalt)
@@ -1087,6 +1093,8 @@ int _tmain(int argc, TCHAR* argv[])
 	HANDLE hFind;
 	BOOL isFile = TRUE;
 	wstring finPath, foutPath;
+	wstring fullInPath = {};
+	wstring fullOutPath = {};
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stdin, NULL, _IONBF, 0);
@@ -1148,13 +1156,41 @@ int _tmain(int argc, TCHAR* argv[])
       }
 	}
 
+	// Test whether the paths are relative to the path of idcrypt.exe or absolute 
+	// Rule applied is detailed in https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx#fully_qualified_vs._relative_paths
+	// Because we cannot use the "\\?\" prefix with a relative path, relative paths are always limited to a total of MAX_PATH characters = 260.
+	// idxcrypt exe full path is limited to a total of MAX = 32767 characters
+
+	if (PathIsRelativeW(argv[1])) {
+		WCHAR fullExePath[MAX];
+
+		GetModuleFileName(NULL, fullExePath, MAX);
+
+		fullInPath = (wstring(fullExePath).substr(0, wstring(fullExePath).find_last_of(L"\\/")));
+		fullInPath += wstring(L"\\");
+
+	}
+
+	if (PathIsRelativeW(argv[3])) {
+		WCHAR fullExePath[MAX];
+
+		GetModuleFileName(NULL, fullExePath, MAX);
+
+		fullOutPath = (wstring(fullExePath).substr(0, wstring(fullExePath).find_last_of(L"\\/")));
+		fullOutPath += wstring(L"\\");
+
+	}
+
+	fullInPath += wstring(argv[1]);
+	fullOutPath += wstring(argv[3]);
+
 	// Stores information about the first file/folder which path corresponds to argv[1] in FindFileData
-	hFind = FindFirstFileW(argv[1], &FindFileData); 
+	hFind = FindFirstFileW(fullInPath.c_str(), &FindFileData);
 
 	if (hFind == INVALID_HANDLE_VALUE)
 	{
 		// We cannot know whether it is a file or a folder since it cannot even be found
-		printf("File/folder %ws not found (%d). Aborting...\n", argv[1], GetLastError()); // 2 = ERROR_FILE_NOT_FOUND
+		printf("File/folder %ws not found (%d). Aborting...\n", fullInPath.c_str(), GetLastError()); // 2 = ERROR_FILE_NOT_FOUND
 		iStatus = -1; 
 		goto main_end;
 	}
@@ -1163,30 +1199,30 @@ int _tmain(int argc, TCHAR* argv[])
 		FindFileData.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY ? isFile = FALSE : isFile = TRUE;
 
 		if (isFile) {
-			fin = _tfopen(argv[1], _T("rb"));
+			fin = _tfopen(fullInPath.c_str(), _T("rb"));
 			if (!fin)
 			{
-				_tprintf(_T("Failed to open the input file %ws for reading\n. Aborting..."), argv[1]);
+				_tprintf(_T("Failed to open the input file %ws for reading\n. Aborting..."), fullInPath.c_str());
 				iStatus = -1;
 				goto main_end;
 			}
 
 			if ((inputLength = _filelengthi64(_fileno(fin))) == 0)
 			{
-				_tprintf(_T("The input file %ws is empty. No action will be performed. Aborting...\n"), argv[1]);
+				_tprintf(_T("The input file %ws is empty. No action will be performed. Aborting...\n"), fullInPath.c_str());
 				iStatus = -1;
 				goto main_end;
 			}
 
 			if (bForDecrypt && ((wcscmp(argv[1] + wcslen(argv[1]) - 4, L".idx")) || (inputLength < (__int64)(48 + cbSalt)) || (inputLength % 16)))
 			{
-				_tprintf(_T("Error : input file %ws is not a valid encrypted file. Aborting...\n"), argv[1]);
+				_tprintf(_T("Error : input file %ws is not a valid encrypted file. Aborting...\n"), fullInPath.c_str());
 				iStatus = -1;
 				goto main_end;
 			}
 
 			foutPath = wstring(L"\\\\?\\"); // To get the maximum length possible on Windows on runtime
-			foutPath += wstring(argv[3]);
+			foutPath += fullOutPath;
 
 			// Check whether the user entered the output file with the correct extension ".idx"
 			// Add it if it's not the case, before creating the file
@@ -1197,29 +1233,29 @@ int _tmain(int argc, TCHAR* argv[])
 			fout = _tfopen(foutPath.c_str(), _T("wb"));
 			if (!fout)
 			{
-				_tprintf(_T("Failed to open the output file %ws for writing. Aborting...\n"), argv[3]);
+				_tprintf(_T("Failed to open the output file %ws for writing. Aborting...\n"), fullOutPath.c_str());
 				iStatus = -1;
 				goto main_end;
 			}
 
 			finPath = wstring(L"\\\\?\\");
-			finPath += wstring(argv[1]);
+			finPath += fullInPath;
 
 		}
 		else {
 			// If there is an error creating the output directory and this error is not ERROR_ALREADY_EXISTS
-			if (CreateDirectory(argv[3], NULL)==0 && ERROR_ALREADY_EXISTS != GetLastError()) {
-				printf("Could not create/open the output folder %ws . (%d). Aborting...\n", argv[3], GetLastError());
+			if (CreateDirectory(fullOutPath.c_str(), NULL)==0 && ERROR_ALREADY_EXISTS != GetLastError()) {
+				printf("Could not create/open the output folder %ws . (%d). Aborting...\n", fullOutPath.c_str(), GetLastError());
 				iStatus = -1;
 				goto main_end;
 			}
 
 			finPath = wstring(L"\\\\?\\");
-			finPath += wstring(argv[1]);
+			finPath += fullInPath;
 			if (finPath.substr(finPath.length()-2, 2).compare(wstring(L"\\*"))) finPath += wstring(L"\\*");
 
 			foutPath = wstring(L"\\\\?\\");
-			foutPath += wstring(argv[3]);
+			foutPath += fullOutPath;
 			if (foutPath.c_str()[foutPath.length() - 1] != L'\\') foutPath += wstring(L"\\");
 
 			hFind = FindFirstFile(finPath.c_str(), &FindFileData);
