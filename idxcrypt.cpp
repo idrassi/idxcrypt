@@ -1093,8 +1093,8 @@ int _tmain(int argc, TCHAR* argv[])
 	HANDLE hFind;
 	BOOL isFile = TRUE;
 	wstring finPath, foutPath;
-	wstring fullInPath = {};
-	wstring fullOutPath = {};
+	wstring fullInPath;
+	wstring fullOutPath;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stdin, NULL, _IONBF, 0);
