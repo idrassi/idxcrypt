@@ -964,8 +964,10 @@ int opEncDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 			return iStatus;
 		}
 
-		fclose(fout);
-		fout = NULL;
+		if (fout) {
+			fclose(fout);
+			fout = NULL;
+		}
 
 		if (FindNextFile(h, &f) == 0) break;
 	} while (1);
@@ -1060,8 +1062,10 @@ int opDecDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 			return iStatus; // To end all loops, not only the internal one (break)
 		}
 
-		fclose(fout);
-		fout = NULL;
+		if (fout) {
+			fclose(fout);
+			fout = NULL;
+		}
 		
 		if (FindNextFile(h, &f) == 0) break;
 	} while (1);
@@ -1162,21 +1166,21 @@ int _tmain(int argc, TCHAR* argv[])
 	// idxcrypt exe full path is limited to a total of MAX = 32767 characters
 
 	if (PathIsRelativeW(argv[1])) {
-		WCHAR fullExePath[MAX];
+		WCHAR currentWorkingDir[MAX];
 
-		GetModuleFileName(NULL, fullExePath, MAX);
+		_wgetcwd(currentWorkingDir, MAX);
 
-		fullInPath = (wstring(fullExePath).substr(0, wstring(fullExePath).find_last_of(L"\\/")));
+		fullInPath = (wstring(currentWorkingDir));
 		fullInPath += wstring(L"\\");
 
 	}
 
 	if (PathIsRelativeW(argv[3])) {
-		WCHAR fullExePath[MAX];
+		WCHAR currentWorkingDir[MAX];
 
-		GetModuleFileName(NULL, fullExePath, MAX);
+		_wgetcwd(currentWorkingDir, MAX);
 
-		fullOutPath = (wstring(fullExePath).substr(0, wstring(fullExePath).find_last_of(L"\\/")));
+		fullOutPath = (wstring(currentWorkingDir));
 		fullOutPath += wstring(L"\\");
 
 	}
