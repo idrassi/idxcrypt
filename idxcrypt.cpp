@@ -893,27 +893,27 @@ int opFile(FILE* fin, FILE* fout, const WCHAR foutPath[], char szPassword[], BOO
 
 int opEncDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR foutPath[], char szPassword[], PRF *pPrf, size_t cbSalt)
 {
-	FILE* fin;
-	FILE* fout;
+	FILE* fin=NULL;
+	FILE* fout=NULL;
 	wstring fileName, fileInPath, fileOutPath;
 	__int64 inputLength;
 	int iStatus = 0;
 
 	do {
 		fileName = wstring(f.cFileName);
-		if ((fileName.compare(wstring(L".")) == 0 && fileName.length() == 1) || (fileName.compare(wstring(L"..")) == 0 && fileName.length() == 2)) {
+		if ((fileName.compare(L".") == 0 && fileName.length() == 1) || (fileName.compare(L"..") == 0 && fileName.length() == 2)) {
 			if (FindNextFile(h, &f) == 0) break;
 			continue;
 		}
 		if ((f.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=0) {
 
-			fileOutPath = wstring(foutPath);
+			fileOutPath = foutPath;
 			fileOutPath += fileName;
-			fileOutPath += wstring(L"\\");
+			fileOutPath += L"\\";
 
 			fileInPath = (wstring(finPath)).substr(0, ((wstring)finPath).length() - 1);
 			fileInPath += fileName;
-			fileInPath += wstring(L"\\*");
+			fileInPath += L"\\*";
 
 			if (!CreateDirectory(fileOutPath.c_str(), NULL) && ERROR_ALREADY_EXISTS != GetLastError()) {
 				printf("Could not create/open the output folder %ws . (%d). Aborting...\n", fileOutPath.c_str(), GetLastError());
@@ -928,9 +928,9 @@ int opEncDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 			fileInPath = (wstring(finPath)).substr(0, ((wstring)finPath).length() - 1);
 			fileInPath += fileName;
 
-			fileOutPath = wstring(foutPath);
+			fileOutPath = foutPath;
 			fileOutPath += fileName;
-			fileOutPath += wstring(L".idx");
+			fileOutPath += L".idx";
 
 			fin = _tfopen(fileInPath.c_str(), _T("rb"));
 
@@ -960,7 +960,6 @@ int opEncDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 		}
 
 		if (iStatus != 0) {
-			//printf("There was an error. Aborting...\n"); is printed a lot of times, no need
 			return iStatus;
 		}
 
@@ -977,27 +976,27 @@ int opEncDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 
 int opDecDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR foutPath[], char szPassword[], PRF *pPrf, size_t cbSalt)
 {
-	FILE* fin;
-	FILE* fout;
+	FILE* fin=NULL;
+	FILE* fout=NULL;
 	wstring fileName, fileInPath, fileOutPath;
 	__int64 inputLength;
 	int iStatus = 0;
 
 	do {
 		fileName = wstring(f.cFileName);
-		if ((fileName.compare(wstring(L".")) == 0 && fileName.length() == 1) || (fileName.compare(wstring(L"..")) == 0 && fileName.length() == 2)) {
+		if ((fileName.compare(L".") == 0 && fileName.length() == 1) || (fileName.compare(L"..") == 0 && fileName.length() == 2)) {
 			if (FindNextFile(h, &f) == 0) break;
 			continue;
 		}
 		if ((f.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=0) {
 
-			fileOutPath = wstring(foutPath);
+			fileOutPath = foutPath;
 			fileOutPath += fileName;
-			fileOutPath += wstring(L"\\");
+			fileOutPath += L"\\";
 
 			fileInPath = (wstring(finPath)).substr(0, (wstring(finPath)).length() - 1);
 			fileInPath += fileName;
-			fileInPath += wstring(L"\\*");
+			fileInPath += L"\\*";
 
 			if (!CreateDirectory(fileOutPath.c_str(), NULL) && ERROR_ALREADY_EXISTS != GetLastError()) {
 				printf("\nCould not create/open the output folder %ws . (%d). Aborting...\n", fileOutPath.c_str(), GetLastError());
@@ -1012,7 +1011,7 @@ int opDecDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 			fileInPath = (wstring(finPath)).substr(0, (wstring(finPath)).length() - 1);
 			fileInPath += fileName;
 
-			fileOutPath = wstring(foutPath);
+			fileOutPath = foutPath;
 
 			fin = _tfopen(fileInPath.c_str(), _T("rb"));
 
@@ -1058,7 +1057,6 @@ int opDecDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR fou
 		}
 
 		if (iStatus != 0) {
-			//printf("There was an error. Aborting...\n");
 			return iStatus; // To end all loops, not only the internal one (break)
 		}
 
@@ -1076,6 +1074,24 @@ int opDir(WIN32_FIND_DATA f, HANDLE h, const WCHAR finPath[], const WCHAR foutPa
 {
 	if (bForDecrypt) return(opDecDir(f, h, finPath, foutPath, szPassword, pPrf, cbSalt));
 	else return(opEncDir(f, h, finPath, foutPath, szPassword, pPrf, cbSalt));
+}
+
+WCHAR* getAbsolutePath(WCHAR* relativePath)
+{
+	DWORD len = GetFullPathNameW(relativePath, 0, NULL, NULL);
+	// len contains the size, in TCHARs, of the buffer that is required to hold the path and the terminating null character.
+	WCHAR* dir = (WCHAR*)malloc(len*sizeof(WCHAR));
+
+	DWORD temp = GetFullPathNameW(relativePath, len, dir, NULL);
+	// temp contains, if succeeds, the size, in TCHARs, of the buffer that is required to hold the path without the terminating null character.
+
+	// Since the path is relative, it is limited to MAX_PATH = 260 chars. No need to prepend "\\?\"
+
+	if (temp == 0) {
+		printf("An error occured while transforming the relative path to an absolute path! Aborting... (%d)\n", GetLastError());
+		return NULL;
+	}
+	return dir;
 }
 
 int _tmain(int argc, TCHAR* argv[])
@@ -1096,9 +1112,9 @@ int _tmain(int argc, TCHAR* argv[])
 	WIN32_FIND_DATA FindFileData;
 	HANDLE hFind;
 	BOOL isFile = TRUE;
-	wstring finPath, foutPath;
 	wstring fullInPath;
 	wstring fullOutPath;
+	WCHAR *inDir, *outDir;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stdin, NULL, _IONBF, 0);
@@ -1160,33 +1176,32 @@ int _tmain(int argc, TCHAR* argv[])
       }
 	}
 
-	// Test whether the paths are relative to the path of idcrypt.exe or absolute 
+	// Test whether argv[1] and argv[3] are relative to the current working directory or absolute 
 	// Rule applied is detailed in https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx#fully_qualified_vs._relative_paths
-	// Because we cannot use the "\\?\" prefix with a relative path, relative paths are always limited to a total of MAX_PATH characters = 260.
-	// idxcrypt exe full path is limited to a total of MAX = 32767 characters
+	// Because we cannot use the "\\?\" prefix with a relative path, it is always limited to a total of MAX_PATH = 260 characters (cannot be extended)
+
+	// To get the maximum length possible on Windows on runtime and remove the MAX_PATH limitation
+
+	fullInPath = L"\\\\?\\";
+	fullOutPath = L"\\\\?\\";
 
 	if (PathIsRelativeW(argv[1])) {
-		WCHAR currentWorkingDir[MAX];
-
-		_wgetcwd(currentWorkingDir, MAX);
-
-		fullInPath = (wstring(currentWorkingDir));
-		fullInPath += wstring(L"\\");
-
+		if ((inDir = getAbsolutePath(argv[1])) == NULL) {
+			iStatus = -1;
+			goto main_end;
+		}
+		fullInPath += inDir;
 	}
+	else fullInPath += argv[1];
 
 	if (PathIsRelativeW(argv[3])) {
-		WCHAR currentWorkingDir[MAX];
-
-		_wgetcwd(currentWorkingDir, MAX);
-
-		fullOutPath = (wstring(currentWorkingDir));
-		fullOutPath += wstring(L"\\");
-
+		if ((outDir = getAbsolutePath(argv[3])) == NULL) {
+			iStatus = -1;
+			goto main_end;
+		}
+		fullOutPath += outDir;
 	}
-
-	fullInPath += wstring(argv[1]);
-	fullOutPath += wstring(argv[3]);
+	else fullOutPath += argv[3];
 
 	// Stores information about the first file/folder which path corresponds to argv[1] in FindFileData
 	hFind = FindFirstFileW(fullInPath.c_str(), &FindFileData);
@@ -1218,32 +1233,26 @@ int _tmain(int argc, TCHAR* argv[])
 				goto main_end;
 			}
 
-			if (bForDecrypt && ((wcscmp(argv[1] + wcslen(argv[1]) - 4, L".idx")) || (inputLength < (__int64)(48 + cbSalt)) || (inputLength % 16)))
+			if (bForDecrypt && ((fullInPath.substr(fullInPath.length() - 4, 4).compare(wstring(L".idx"))!=0) || (inputLength < (__int64)(48 + cbSalt)) || (inputLength % 16)))
 			{
 				_tprintf(_T("Error : input file %ws is not a valid encrypted file. Aborting...\n"), fullInPath.c_str());
 				iStatus = -1;
 				goto main_end;
 			}
 
-			foutPath = wstring(L"\\\\?\\"); // To get the maximum length possible on Windows on runtime
-			foutPath += fullOutPath;
-
 			// Check whether the user entered the output file with the correct extension ".idx"
 			// Add it if it's not the case, before creating the file
 			if (!bForDecrypt) {
-				if (foutPath.substr(foutPath.length()-4, 4).compare(wstring(L".idx"))!=0) foutPath += wstring(L".idx");
+				if (fullOutPath.substr(fullOutPath.length()-4, 4).compare(wstring(L".idx"))!=0) fullOutPath += wstring(L".idx");
 			}
 
-			fout = _tfopen(foutPath.c_str(), _T("wb"));
+			fout = _tfopen(fullOutPath.c_str(), _T("wb"));
 			if (!fout)
 			{
 				_tprintf(_T("Failed to open the output file %ws for writing. Aborting...\n"), fullOutPath.c_str());
 				iStatus = -1;
 				goto main_end;
 			}
-
-			finPath = wstring(L"\\\\?\\");
-			finPath += fullInPath;
 
 		}
 		else {
@@ -1254,15 +1263,12 @@ int _tmain(int argc, TCHAR* argv[])
 				goto main_end;
 			}
 
-			finPath = wstring(L"\\\\?\\");
-			finPath += fullInPath;
-			if (finPath.substr(finPath.length()-2, 2).compare(wstring(L"\\*"))) finPath += wstring(L"\\*");
+			if (fullInPath.c_str()[fullInPath.length() - 1] != L'\\') fullInPath += L"\\";
+			fullInPath += L"*";
 
-			foutPath = wstring(L"\\\\?\\");
-			foutPath += fullOutPath;
-			if (foutPath.c_str()[foutPath.length() - 1] != L'\\') foutPath += wstring(L"\\");
+			if (fullOutPath.c_str()[fullOutPath.length() - 1] != L'\\') fullOutPath += L"\\";
 
-			hFind = FindFirstFile(finPath.c_str(), &FindFileData);
+			hFind = FindFirstFile(fullInPath.c_str(), &FindFileData);
 		}
 	}
 
@@ -1290,8 +1296,8 @@ int _tmain(int argc, TCHAR* argv[])
 	// clear the password in the command line //
 	SecureZeroMemory(argv[2], _tcslen(argv[2]) * sizeof(TCHAR));
 
-	if (isFile) iStatus = opFile(fin, fout, foutPath.c_str(), szPassword, bForDecrypt, pPrf, cbSalt); 
-	else iStatus = opDir(FindFileData, hFind, finPath.c_str(), foutPath.c_str(), szPassword, pPrf, cbSalt, bForDecrypt);
+	if (isFile) iStatus = opFile(fin, fout, fullOutPath.c_str(), szPassword, bForDecrypt, pPrf, cbSalt);
+	else iStatus = opDir(FindFileData, hFind, fullInPath.c_str(), fullOutPath.c_str(), szPassword, pPrf, cbSalt, bForDecrypt);
 
 	main_end : SecureZeroMemory(szPassword, sizeof(szPassword));
 	if (fin) fclose(fin);
@@ -1299,7 +1305,7 @@ int _tmain(int argc, TCHAR* argv[])
 	{
 		fclose(fout);
 		// delete the file in case of error //
-		if (iStatus != 0) DeleteFile(foutPath.c_str());
+		if (iStatus != 0) DeleteFile(fullOutPath.c_str());
 	}
 
 	return iStatus;
