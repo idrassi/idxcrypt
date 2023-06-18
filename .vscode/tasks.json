@@ -1,0 +1,64 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "windows": {
+        "options": {
+        "shell": {
+            "executable": "cmd.exe",
+            "args": [
+            "/C",
+            "vcvarsall.bat",
+            "x86",
+            "&&"
+            ]
+        },
+        "cwd": "C:\\Program Files (x86)\\Microsoft Visual Studio 10.0\\VC\\"
+        }
+    },
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "msbuild",
+            "args": [
+                // Ask msbuild to generate full paths for file names.
+                "${workspaceFolder}\\idxcrypt.sln",
+                "/property:GenerateFullPaths=true",
+                "/p:Configuration=${input:build-configuration}",
+                "/p:Platform=${input:build-Platform}",
+                "/t:build",
+                // Do not generate summary otherwise it leads to duplicate errors in Problems panel
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always"
+            },
+            // Use the standard MS compiler pattern to detect errors, warnings and infos
+            "problemMatcher": "$msCompile"
+        }
+    ],
+    "inputs": [
+        {
+          "type": "pickString",
+          "id": "build-configuration",
+          "description": "Select build configuration",
+          "options": [
+            "Debug",
+            "Release",
+          ],
+          "default": "Debug"
+        },
+        {
+            "type": "pickString",
+            "id": "build-Platform",
+            "description": "Select build Platform",
+            "options": [
+              "x64",
+              "Win32",
+            ],
+            "default": "x64"
+          }
+      ]
+}
